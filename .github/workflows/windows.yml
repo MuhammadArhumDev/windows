@@ -14,16 +14,26 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: Enable Administrator Account
+      - name: Enable and Configure Administrator Account
         run: |
           # Enable the Administrator account
-          net user Administrator /active:yes
+          $adminName = "Administrator"
+          $adminPassword = "${{ secrets.ROOT_PASSWORD }}"
 
-      - name: Set Administrator Password
-        run: |
-          # Set the password for the Administrator user
-          $password = "${{ secrets.ROOT_PASSWORD }}"
-          net user Administrator "$password"
+          # Check if the Administrator account exists
+          $adminExists = Get-LocalUser -Name $adminName -ErrorAction SilentlyContinue
+
+          if (-not $adminExists) {
+              # Create the Administrator account if it doesn't exist
+              New-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force) -AccountNeverExpires -PasswordNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member $adminName
+          } else {
+              # Enable the Administrator account if it exists
+              Enable-LocalUser -Name $adminName
+          }
+
+          # Set the password for the Administrator account
+          Set-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force)
 
       - name: Install Ngrok
         run: |
@@ -51,4 +61,4 @@ jobs:
       - name: Keep Runner Alive
         run: |
           # Keep the runner alive for 6 hours
-          sleep 6h
+          Start-Sleep -Seconds 21600
