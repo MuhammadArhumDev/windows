@@ -14,12 +14,16 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
+      - name: Enable Administrator Account
+        run: |
+          # Enable the Administrator account
+          net user Administrator /active:yes
+
       - name: Set Administrator Password
         run: |
           # Set the password for the Administrator user
-          $password = ConvertTo-SecureString "${{ secrets.ROOT_PASSWORD }}" -AsPlainText -Force
-          Set-LocalUser -Name "Administrator" -Password $password
-          Enable-LocalUser -Name "Administrator"
+          $password = "${{ secrets.ROOT_PASSWORD }}"
+          net user Administrator "$password"
 
       - name: Install Ngrok
         run: |
