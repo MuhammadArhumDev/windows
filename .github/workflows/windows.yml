@@ -17,7 +17,7 @@ jobs:
       - name: Set Administrator Password
         run: |
           # Set the password for the Administrator user
-          $password = ConvertTo-SecureString "${{ secrets.ADMIN_PASSWORD }}" -AsPlainText -Force
+          $password = ConvertTo-SecureString "${{ secrets.ROOT_PASSWORD }}" -AsPlainText -Force
           Set-LocalUser -Name "Administrator" -Password $password
           Enable-LocalUser -Name "Administrator"
 
