@@ -50,7 +50,8 @@ jobs:
       - name: Start Ngrok Tunnel
         run: |
           # Start Ngrok tunnel for RDP (port 3389)
-          Start-Process -NoNewWindow -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389"
+          # Start-Process -NoNewWindow -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389"
+          & "C:\ngrok\ngrok.exe" tcp 3389 > ngrok.log 2>&1
 
       - name: Print RDP Debug Info
         run: |
