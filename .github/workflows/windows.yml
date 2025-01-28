@@ -1,24 +1,50 @@
-name: WINDOWS-001
+name: Debug with RDP
 
-on: [push, workflow_dispatch]
+on:
+  workflow_dispatch:
 
 jobs:
-  build:
+  debug:
     runs-on: windows-latest
 
     steps:
-      - name: Download
-        run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-      - name: Extract
-        run: Expand-Archive ngrok.zip
-      - name: Auth
-        run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-      - name: Enable TS
-        run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-      - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-      - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-      - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-      - name: Create Tunnel
-        run: .\ngrok\ngrok.exe tcp 3389
+      - name: Enable RDP
+        run: |
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: Set Administrator Password
+        run: |
+          # Set the password for the Administrator user
+          $password = ConvertTo-SecureString "${{ secrets.ADMIN_PASSWORD }}" -AsPlainText -Force
+          Set-LocalUser -Name "Administrator" -Password $password
+          Enable-LocalUser -Name "Administrator"
+
+      - name: Install Ngrok
+        run: |
+          # Download and install Ngrok
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok"
+          Remove-Item -Path "ngrok.zip"
+
+      - name: Authenticate Ngrok
+        run: |
+          # Authenticate Ngrok with the provided token
+          C:\ngrok\ngrok.exe authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
+
+      - name: Start Ngrok Tunnel
+        run: |
+          # Start Ngrok tunnel for RDP (port 3389)
+          Start-Process -NoNewWindow -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389"
+
+      - name: Print RDP Debug Info
+        run: |
+          # Print the IP address and Ngrok tunnel information
+          ipconfig
+          Get-Content -Path "$env:USERPROFILE\.ngrok2\ngrok.yml"
+
+      - name: Keep Runner Alive
+        run: |
+          # Keep the runner alive for 6 hours
+          sleep 6h
