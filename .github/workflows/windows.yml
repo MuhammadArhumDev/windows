@@ -17,6 +17,7 @@ jobs:
         run: |
           $adminName = "Administrator"
           $adminPassword = "${{ secrets.ROOT_PASSWORD }}"
+
           $adminExists = Get-LocalUser -Name $adminName -ErrorAction SilentlyContinue
           if (-not $adminExists) {
               New-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force) -AccountNeverExpires -PasswordNeverExpires
@@ -24,6 +25,7 @@ jobs:
           } else {
               Enable-LocalUser -Name $adminName
           }
+
           Set-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force)
 
       - name: Install Ngrok
@@ -38,21 +40,20 @@ jobs:
 
       - name: Start Ngrok Tunnel in Background
         run: |
-          Start-Job -ScriptBlock {
-            & "C:\ngrok\ngrok.exe" tcp 3389 --log=stdout > "$env:TEMP\ngrok.log" 2>&1
-          }
-          Start-Sleep -Seconds 10  # Wait for ngrok to boot up
+          Start-Process -NoNewWindow -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -RedirectStandardOutput "ngrok.log" -RedirectStandardError "ngrok_error.log"
+          Start-Sleep -Seconds 10
 
       - name: Fetch and Print Ngrok RDP URL
         run: |
-          $ngrokLog = Get-Content "$env:TEMP\ngrok.log" -Raw
+          $ngrokLog = Get-Content "ngrok.log" -Raw
           if ($ngrokLog -match "tcp://(.+?)\r") {
               $url = $matches[1]
               Write-Host "🔗 RDP Tunnel: $url"
               Write-Host "🛠 Use Administrator and your ROOT_PASSWORD to connect."
           } else {
-              Write-Host "❌ Ngrok did not start correctly. Check ngrok.log for issues:"
+              Write-Host "❌ Ngrok did not start correctly. Here's the log:"
               Write-Host $ngrokLog
+              Write-Host "❗ Check 'ngrok_error.log' if this persists."
           }
 
       - name: Print IP Config
