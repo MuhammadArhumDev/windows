@@ -47,40 +47,21 @@ jobs:
           # Authenticate Ngrok with the provided token
           C:\ngrok\ngrok.exe authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
 
-      # ─── NEW NGROK TUNNEL SECTION ───────────────────────────────────────────────
-
-      - name: Start Ngrok Tunnel in Background
+      - name: Start Ngrok Tunnel
         run: |
-          # Launch Ngrok in the background and log output
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" `
-            -ArgumentList 'tcp 3389 --log=stdout' `
-            -NoNewWindow `
-            -RedirectStandardOutput ngrok.log `
-            -RedirectStandardError ngrok_error.log
-          # Give Ngrok a moment to spin up
-          Start-Sleep -Seconds 10
-
-      - name: Fetch and Print Ngrok RDP URL
-        run: |
-          # Extract the public tcp:// URL from the log
-          $log = Get-Content ngrok.log -Raw
-          if ($log -match 'tcp://(.+?)\r') {
-            Write-Host "🔗 RDP Tunnel: $($matches[1])"
-            Write-Host "🛠 Connect using Administrator / your ROOT_PASSWORD secret"
-          } else {
-            Write-Host "❌ Ngrok failed to expose port or log is missing the URL. Dumping logs:"
-            Write-Host $log
-            Write-Host "❗ Also check ngrok_error.log for errors."
-          }
-
-      # ────────────────────────────────────────────────────────────────────────────
+          # Start Ngrok tunnel for RDP (port 3389)
+          # Start-Process -NoNewWindow -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389"
+          & "C:\ngrok\ngrok.exe" tcp 3389 > ngrok.log 2>&1
 
       - name: Print RDP Debug Info
         run: |
-          # Print the IP address and any local RDP info
+          # Print the IP address and Ngrok tunnel information
           ipconfig
+          # Get-Content -Path "$env:USERPROFILE\.ngrok2\ngrok.yml"
 
       - name: Keep Runner Alive
         run: |
           # Keep the runner alive for 6 hours
           Start-Sleep -Seconds 21600
+
+
