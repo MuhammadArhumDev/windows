@@ -11,55 +11,76 @@ jobs:
       - name: Enable RDP
         run: |
           # Enable RDP
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
       - name: Enable and Configure Administrator Account
         run: |
-          # Enable the built-in Administrator account and set its password
-          Enable-LocalUser -Name Administrator
-          $securePass = ConvertTo-SecureString "${{ secrets.ROOT_PASSWORD }}" -AsPlainText -Force
-          Set-LocalUser -Name Administrator -Password $securePass
+          # Enable the Administrator account
+          $adminName = "Administrator"
+          $adminPassword = "${{ secrets.ROOT_PASSWORD }}"
+
+          # Check if the Administrator account exists
+          $adminExists = Get-LocalUser -Name $adminName -ErrorAction SilentlyContinue
+
+          if (-not $adminExists) {
+              # Create the Administrator account if it doesn't exist
+              New-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force) -AccountNeverExpires -PasswordNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member $adminName
+          } else {
+              # Enable the Administrator account if it exists
+              Enable-LocalUser -Name $adminName
+          }
+
+          # Set the password for the Administrator account
+          Set-LocalUser -Name $adminName -Password (ConvertTo-SecureString $adminPassword -AsPlainText -Force)
 
       - name: Install Ngrok
         run: |
           # Download and install Ngrok
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
-          Expand-Archive -Path ngrok.zip -DestinationPath C:\ngrok
-          Remove-Item ngrok.zip
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok"
+          Remove-Item -Path "ngrok.zip"
 
       - name: Authenticate Ngrok
         run: |
           # Authenticate Ngrok with the provided token
           C:\ngrok\ngrok.exe authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
 
+      # ─── NEW NGROK TUNNEL SECTION ───────────────────────────────────────────────
+
       - name: Start Ngrok Tunnel in Background
         run: |
-          # Launch Ngrok in background, redirect output to a log
-          Start-Process -FilePath C:\ngrok\ngrok.exe `
+          # Launch Ngrok in the background and log output
+          Start-Process -FilePath "C:\ngrok\ngrok.exe" `
             -ArgumentList 'tcp 3389 --log=stdout' `
             -NoNewWindow `
             -RedirectStandardOutput ngrok.log `
             -RedirectStandardError ngrok_error.log
-          # Give Ngrok time to initialize
+          # Give Ngrok a moment to spin up
           Start-Sleep -Seconds 10
 
       - name: Fetch and Print Ngrok RDP URL
         run: |
-          # Read the log and extract the public tcp:// URL
+          # Extract the public tcp:// URL from the log
           $log = Get-Content ngrok.log -Raw
           if ($log -match 'tcp://(.+?)\r') {
             Write-Host "🔗 RDP Tunnel: $($matches[1])"
             Write-Host "🛠 Connect using Administrator / your ROOT_PASSWORD secret"
           } else {
-            Write-Host "❌ Could not find Ngrok URL in log. Dumping logs:"
+            Write-Host "❌ Ngrok failed to expose port or log is missing the URL. Dumping logs:"
             Write-Host $log
+            Write-Host "❗ Also check ngrok_error.log for errors."
           }
 
-      - name: Print Local IP Configuration
-        run: ipconfig
+      # ────────────────────────────────────────────────────────────────────────────
+
+      - name: Print RDP Debug Info
+        run: |
+          # Print the IP address and any local RDP info
+          ipconfig
 
       - name: Keep Runner Alive
         run: |
-          # Prevent the VM from shutting down for 6 hours
+          # Keep the runner alive for 6 hours
           Start-Sleep -Seconds 21600
