@@ -1,4 +1,4 @@
-name: Debug with RDP
+name: Windows RDP
 
 on:
   workflow_dispatch:
@@ -63,5 +63,3 @@ jobs:
         run: |
           # Keep the runner alive for 6 hours
           Start-Sleep -Seconds 21600
-
-
