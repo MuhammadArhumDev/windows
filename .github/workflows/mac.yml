@@ -1,0 +1,102 @@
+name: Mac VNC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: macos-latest
+
+    steps:
+      - name: Enable and Configure User Account
+        run: |
+          # Set the password for the current runner user
+          USERNAME=$(whoami)
+          PASSWORD="${{ secrets.ROOT_PASSWORD }}"
+
+          # Change the password for the current user
+          sudo dscl . -passwd /Users/$USERNAME "$PASSWORD"
+
+      - name: Enable Screen Sharing (VNC)
+        run: |
+          # Enable Screen Sharing (VNC server) on macOS
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate \
+            -configure -access -on \
+            -configure -allowAccessFor -allUsers \
+            -configure -restart -agent \
+            -configure -privs -all
+
+          # Set VNC password for non-ARD clients
+          PASSWORD="${{ secrets.ROOT_PASSWORD }}"
+          echo "$PASSWORD" | sudo tee /Library/Preferences/com.apple.VNCpassword > /dev/null
+
+          # Also set it via defaults for VNC-only connections
+          sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true
+
+          # Restart the VNC/ARD service
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent -console
+
+      - name: Install Ngrok
+        run: |
+          # Download and install Ngrok for macOS
+          curl -s -L "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip" -o ngrok.zip
+          unzip ngrok.zip -d /usr/local/bin
+          rm ngrok.zip
+
+      - name: Authenticate Ngrok
+        run: |
+          # Authenticate Ngrok with the provided token
+          ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
+
+      - name: Start Ngrok Tunnel
+        run: |
+          # Start Ngrok tunnel for VNC (port 5900)
+          ngrok tcp 5900 > ngrok.log 2>&1 &
+
+      - name: Print VNC Connection Info
+        run: |
+          # Wait for Ngrok to start
+          sleep 5
+
+          # Print system info
+          whoami
+          hostname
+          sw_vers
+
+          # Print Ngrok tunnel information
+          curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              for tunnel in data.get('tunnels', []):
+                  public_url = tunnel.get('public_url', '')
+                  print('')
+                  print('========================================')
+                  print('     MAC VNC CONNECTION INFO')
+                  print('========================================')
+                  print(f'Ngrok URL: {public_url}')
+                  if public_url.startswith('tcp://'):
+                      addr = public_url.replace('tcp://', '')
+                      host, port = addr.rsplit(':', 1)
+                      print(f'')
+                      print(f'Connect with any VNC client:')
+                      print(f'  Address: {host}:{port}')
+                      print(f'  Username: $(whoami)')
+                      print(f'  Password: (from ROOT_PASSWORD secret)')
+                      print(f'')
+                      print(f'On Windows, use RealVNC Viewer or TightVNC')
+                      print(f'On Mac, use Finder > Go > Connect to Server')
+                      print(f'  vnc://{host}:{port}')
+                      print(f'')
+                      print('========================================')
+          except Exception as e:
+              print(f'Error parsing tunnels: {e}')
+              print('Check ngrok.log or visit http://127.0.0.1:4040')
+          "
+
+      - name: Keep Runner Alive
+        run: |
+          # Keep the runner alive for 6 hours
+          sleep 21600
