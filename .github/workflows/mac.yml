@@ -8,42 +8,97 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Enable and Configure User Account
+      - name: Create VNC User Account
         run: |
-          # Set the password for the current runner user
-          USERNAME=$(whoami)
-          PASSWORD="${{ secrets.ROOT_PASSWORD }}"
+          # Create a fresh local user (avoids needing old password)
+          VNC_USER="vncuser"
+          VNC_PASS="${{ secrets.ROOT_PASSWORD }}"
 
-          # Change the password for the current user
-          sudo dscl . -passwd /Users/$USERNAME "$PASSWORD"
+          # Create the user via sysadminctl (does not require old password)
+          sudo sysadminctl -addUser "$VNC_USER" \
+            -password "$VNC_PASS" \
+            -admin \
+            -fullName "VNC User"
+
+          # Ensure the user has a home directory
+          sudo createhomedir -c -u "$VNC_USER" 2>/dev/null || true
+
+          echo "Created user: $VNC_USER"
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          # Enable Screen Sharing (VNC server) on macOS
+          VNC_PASS="${{ secrets.ROOT_PASSWORD }}"
+
+          # Enable Screen Sharing (Apple Remote Desktop / VNC server)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure -access -on \
             -configure -allowAccessFor -allUsers \
-            -configure -restart -agent \
-            -configure -privs -all
+            -configure -privs -all \
+            -restart -agent
 
-          # Set VNC password for non-ARD clients
-          PASSWORD="${{ secrets.ROOT_PASSWORD }}"
-          echo "$PASSWORD" | sudo tee /Library/Preferences/com.apple.VNCpassword > /dev/null
+          # Set the VNC password (used by non-ARD VNC clients like RealVNC)
+          # This uses the proper Python-based method to write the scrambled password
+          python3 -c "
+          import subprocess, sys
 
-          # Also set it via defaults for VNC-only connections
+          password = '''$VNC_PASS'''
+          # Truncate to 8 chars (VNC spec limit)
+          password = password[:8]
+
+          # Build the byte-scrambled VNC password
+          key = [23, 82, 107, 6, 35, 78, 88, 7]
+          pw_bytes = [0] * 8
+          for i, ch in enumerate(password[:8]):
+              pw_bytes[i] = ord(ch)
+
+          # Reverse bits (VNC DES quirk)
+          def reverse_bits(b):
+              result = 0
+              for _ in range(8):
+                  result = (result << 1) | (b & 1)
+                  b >>= 1
+              return result
+
+          pw_bytes = [reverse_bits(b) for b in pw_bytes]
+          key = [reverse_bits(k) for k in key]
+
+          # XOR encode
+          encoded = bytes([pw_bytes[i] ^ key[i % len(key)] for i in range(8)])
+
+          with open('/tmp/vncpasswd', 'wb') as f:
+              f.write(encoded)
+          print('VNC password file written')
+          "
+
+          sudo mkdir -p /Library/Preferences/com.apple.RemoteManagement
+          sudo cp /tmp/vncpasswd /Library/Preferences/com.apple.RemoteManagement/VNCPassword
+          sudo chmod 600 /Library/Preferences/com.apple.RemoteManagement/VNCPassword
+
+          # Ensure VNC password auth is enabled
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true
 
-          # Restart the VNC/ARD service
+          # Restart ARD agent to apply VNC password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -restart -agent -console
+            -restart -agent
+
+          echo "Screen Sharing (VNC) enabled on port 5900"
 
       - name: Install Ngrok
         run: |
-          # Download and install Ngrok for macOS
-          curl -s -L "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip" -o ngrok.zip
-          unzip ngrok.zip -d /usr/local/bin
+          # Detect architecture (arm64 or amd64)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip"
+          else
+            NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip"
+          fi
+
+          echo "Downloading Ngrok for $ARCH..."
+          curl -s -L "$NGROK_URL" -o ngrok.zip
+          sudo unzip -o ngrok.zip -d /usr/local/bin
           rm ngrok.zip
+          ngrok version
 
       - name: Authenticate Ngrok
         run: |
@@ -54,15 +109,16 @@ jobs:
         run: |
           # Start Ngrok tunnel for VNC (port 5900)
           ngrok tcp 5900 > ngrok.log 2>&1 &
+          echo "Ngrok started in background"
 
       - name: Print VNC Connection Info
         run: |
-          # Wait for Ngrok to start
+          # Wait for Ngrok to initialize
           sleep 5
 
           # Print system info
-          whoami
-          hostname
+          echo "Runner user: $(whoami)"
+          echo "Hostname: $(hostname)"
           sw_vers
 
           # Print Ngrok tunnel information
@@ -72,28 +128,26 @@ jobs:
               data = json.load(sys.stdin)
               for tunnel in data.get('tunnels', []):
                   public_url = tunnel.get('public_url', '')
-                  print('')
-                  print('========================================')
-                  print('     MAC VNC CONNECTION INFO')
-                  print('========================================')
-                  print(f'Ngrok URL: {public_url}')
                   if public_url.startswith('tcp://'):
                       addr = public_url.replace('tcp://', '')
                       host, port = addr.rsplit(':', 1)
-                      print(f'')
-                      print(f'Connect with any VNC client:')
-                      print(f'  Address: {host}:{port}')
-                      print(f'  Username: $(whoami)')
-                      print(f'  Password: (from ROOT_PASSWORD secret)')
-                      print(f'')
-                      print(f'On Windows, use RealVNC Viewer or TightVNC')
-                      print(f'On Mac, use Finder > Go > Connect to Server')
-                      print(f'  vnc://{host}:{port}')
-                      print(f'')
+                      print('')
+                      print('========================================')
+                      print('        MAC VNC CONNECTION INFO         ')
+                      print('========================================')
+                      print(f'  VNC Address : {host}:{port}')
+                      print(f'  Username    : vncuser')
+                      print(f'  Password    : (your ROOT_PASSWORD secret)')
+                      print('')
+                      print('  Connect with RealVNC Viewer (Windows):')
+                      print(f'    {host}:{port}')
+                      print('')
+                      print('  Connect from Mac (Finder):')
+                      print(f'    vnc://{host}:{port}')
                       print('========================================')
           except Exception as e:
-              print(f'Error parsing tunnels: {e}')
-              print('Check ngrok.log or visit http://127.0.0.1:4040')
+              print(f'Error: {e}')
+              print('Check ngrok.log for details')
           "
 
       - name: Keep Runner Alive
