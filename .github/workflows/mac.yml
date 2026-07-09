@@ -10,26 +10,54 @@ jobs:
     steps:
       - name: Create VNC User Account
         run: |
-          # Create a fresh local user (avoids needing old password)
           VNC_USER="vncuser"
           VNC_PASS="${{ secrets.ROOT_PASSWORD }}"
 
-          # Create the user via sysadminctl (does not require old password)
           sudo sysadminctl -addUser "$VNC_USER" \
             -password "$VNC_PASS" \
             -admin \
             -fullName "VNC User"
 
-          # Ensure the user has a home directory
           sudo createhomedir -c -u "$VNC_USER" 2>/dev/null || true
-
           echo "Created user: $VNC_USER"
+
+      - name: Grant Screen Capture and Accessibility Permissions (TCC)
+        run: |
+          TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+
+          echo "--- TCC DB Schema ---"
+          sudo sqlite3 "$TCC_DB" ".schema access" 2>/dev/null || echo "Could not read schema"
+
+          CLIENTS=(
+            "com.apple.screensharing"
+            "com.apple.RemoteDesktop.agent"
+            "com.apple.screensharing.agent"
+          )
+
+          for CLIENT in "${CLIENTS[@]}"; do
+            echo "Granting ScreenCapture to: $CLIENT"
+            sudo sqlite3 "$TCC_DB" \
+              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceScreenCapture', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
+              2>/dev/null || true
+
+            echo "Granting PostEvent to: $CLIENT"
+            sudo sqlite3 "$TCC_DB" \
+              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServicePostEvent', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
+              2>/dev/null || true
+
+            echo "Granting Accessibility to: $CLIENT"
+            sudo sqlite3 "$TCC_DB" \
+              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAccessibility', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
+              2>/dev/null || true
+          done
+
+          echo "TCC permissions granted."
 
       - name: Enable Screen Sharing (VNC)
         run: |
           VNC_PASS="${{ secrets.ROOT_PASSWORD }}"
 
-          # Enable Screen Sharing (Apple Remote Desktop / VNC server)
+          # Enable Remote Management / VNC server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure -access -on \
@@ -37,56 +65,67 @@ jobs:
             -configure -privs -all \
             -restart -agent
 
-          # Set the VNC password (used by non-ARD VNC clients like RealVNC)
-          # This uses the proper Python-based method to write the scrambled password
-          python3 -c "
-          import subprocess, sys
+          # Write the VNC password in the DES bit-reversed format macOS expects
+          python3 << 'PYEOF'
+import os, sys
 
-          password = '''$VNC_PASS'''
-          # Truncate to 8 chars (VNC spec limit)
-          password = password[:8]
+password = os.environ.get("VNC_PASS", "")
+password = password[:8].ljust(8, '\x00')
 
-          # Build the byte-scrambled VNC password
-          key = [23, 82, 107, 6, 35, 78, 88, 7]
-          pw_bytes = [0] * 8
-          for i, ch in enumerate(password[:8]):
-              pw_bytes[i] = ord(ch)
+def reverse_bits(b):
+    result = 0
+    for _ in range(8):
+        result = (result << 1) | (b & 1)
+        b >>= 1
+    return result
 
-          # Reverse bits (VNC DES quirk)
-          def reverse_bits(b):
-              result = 0
-              for _ in range(8):
-                  result = (result << 1) | (b & 1)
-                  b >>= 1
-              return result
+key = [23, 82, 107, 6, 35, 78, 88, 7]
+pw_bytes = [ord(c) for c in password]
+pw_bytes = [reverse_bits(b) for b in pw_bytes]
+key      = [reverse_bits(k) for k in key]
+encoded  = bytes([pw_bytes[i] ^ key[i % len(key)] for i in range(8)])
 
-          pw_bytes = [reverse_bits(b) for b in pw_bytes]
-          key = [reverse_bits(k) for k in key]
-
-          # XOR encode
-          encoded = bytes([pw_bytes[i] ^ key[i % len(key)] for i in range(8)])
-
-          with open('/tmp/vncpasswd', 'wb') as f:
-              f.write(encoded)
-          print('VNC password file written')
-          "
+os.makedirs("/tmp/vnc", exist_ok=True)
+with open("/tmp/vnc/vncpasswd", "wb") as f:
+    f.write(encoded)
+print("VNC password file written successfully")
+PYEOF
 
           sudo mkdir -p /Library/Preferences/com.apple.RemoteManagement
-          sudo cp /tmp/vncpasswd /Library/Preferences/com.apple.RemoteManagement/VNCPassword
+          sudo cp /tmp/vnc/vncpasswd /Library/Preferences/com.apple.RemoteManagement/VNCPassword
           sudo chmod 600 /Library/Preferences/com.apple.RemoteManagement/VNCPassword
 
-          # Ensure VNC password auth is enabled
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true
 
-          # Restart ARD agent to apply VNC password
+          # Restart ARD agent to apply password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -restart -agent
 
           echo "Screen Sharing (VNC) enabled on port 5900"
+        env:
+          VNC_PASS: ${{ secrets.ROOT_PASSWORD }}
+
+      - name: Ensure GUI Console Session Exists
+        run: |
+          # Check if WindowServer (the macOS display compositor) is running
+          if pgrep -x WindowServer > /dev/null; then
+            echo "WindowServer is running - GUI session is active"
+          else
+            echo "WindowServer not running - attempting to start loginwindow"
+            sudo launchctl load /System/Library/LaunchDaemons/com.apple.loginwindow.plist 2>/dev/null || true
+          fi
+
+          sleep 3
+
+          # Restart ARD agent so it picks up TCC grants and active display
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent
+
+          sleep 2
+          echo "Console session check complete"
 
       - name: Install Ngrok
         run: |
-          # Detect architecture (arm64 or amd64)
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then
             NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip"
@@ -102,7 +141,6 @@ jobs:
 
       - name: Authenticate Ngrok
         run: |
-          # Authenticate Ngrok with the provided token
           ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
 
       - name: Start Ngrok Tunnel
@@ -113,44 +151,40 @@ jobs:
 
       - name: Print VNC Connection Info
         run: |
-          # Wait for Ngrok to initialize
           sleep 5
 
-          # Print system info
           echo "Runner user: $(whoami)"
           echo "Hostname: $(hostname)"
           sw_vers
 
-          # Print Ngrok tunnel information
-          curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "
-          import sys, json
-          try:
-              data = json.load(sys.stdin)
-              for tunnel in data.get('tunnels', []):
-                  public_url = tunnel.get('public_url', '')
-                  if public_url.startswith('tcp://'):
-                      addr = public_url.replace('tcp://', '')
-                      host, port = addr.rsplit(':', 1)
-                      print('')
-                      print('========================================')
-                      print('        MAC VNC CONNECTION INFO         ')
-                      print('========================================')
-                      print(f'  VNC Address : {host}:{port}')
-                      print(f'  Username    : vncuser')
-                      print(f'  Password    : (your ROOT_PASSWORD secret)')
-                      print('')
-                      print('  Connect with RealVNC Viewer (Windows):')
-                      print(f'    {host}:{port}')
-                      print('')
-                      print('  Connect from Mac (Finder):')
-                      print(f'    vnc://{host}:{port}')
-                      print('========================================')
-          except Exception as e:
-              print(f'Error: {e}')
-              print('Check ngrok.log for details')
-          "
+          curl -s http://127.0.0.1:4040/api/tunnels | python3 << 'PYEOF'
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for tunnel in data.get("tunnels", []):
+        url = tunnel.get("public_url", "")
+        if url.startswith("tcp://"):
+            addr = url.replace("tcp://", "")
+            host, port = addr.rsplit(":", 1)
+            print("")
+            print("========================================")
+            print("       MAC VNC CONNECTION INFO          ")
+            print("========================================")
+            print(f"  VNC Address : {host}:{port}")
+            print(f"  Username    : vncuser")
+            print(f"  Password    : (your ROOT_PASSWORD secret)")
+            print("")
+            print("  Connect with RealVNC Viewer (Windows):")
+            print(f"    {host}:{port}")
+            print("")
+            print("  Connect from Mac (Finder > Go > Connect to Server):")
+            print(f"    vnc://{host}:{port}")
+            print("========================================")
+except Exception as e:
+    print(f"Error: {e}")
+    print("Check ngrok.log for details")
+PYEOF
 
       - name: Keep Runner Alive
         run: |
-          # Keep the runner alive for 6 hours
           sleep 21600
