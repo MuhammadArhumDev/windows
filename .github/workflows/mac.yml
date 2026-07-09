@@ -28,36 +28,19 @@ jobs:
           echo "--- TCC DB Schema ---"
           sudo sqlite3 "$TCC_DB" ".schema access" 2>/dev/null || echo "Could not read schema"
 
-          CLIENTS=(
-            "com.apple.screensharing"
-            "com.apple.RemoteDesktop.agent"
-            "com.apple.screensharing.agent"
-          )
+          CLIENTS="com.apple.screensharing com.apple.RemoteDesktop.agent com.apple.screensharing.agent"
 
-          for CLIENT in "${CLIENTS[@]}"; do
-            echo "Granting ScreenCapture to: $CLIENT"
-            sudo sqlite3 "$TCC_DB" \
-              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceScreenCapture', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
-              2>/dev/null || true
-
-            echo "Granting PostEvent to: $CLIENT"
-            sudo sqlite3 "$TCC_DB" \
-              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServicePostEvent', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
-              2>/dev/null || true
-
-            echo "Granting Accessibility to: $CLIENT"
-            sudo sqlite3 "$TCC_DB" \
-              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAccessibility', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" \
-              2>/dev/null || true
+          for CLIENT in $CLIENTS; do
+            echo "Granting permissions to: $CLIENT"
+            sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceScreenCapture', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" 2>/dev/null || true
+            sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServicePostEvent', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" 2>/dev/null || true
+            sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAccessibility', '$CLIENT', 0, 2, 4, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now'));" 2>/dev/null || true
           done
 
           echo "TCC permissions granted."
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          VNC_PASS="${{ secrets.ROOT_PASSWORD }}"
-
-          # Enable Remote Management / VNC server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure -access -on \
@@ -65,62 +48,51 @@ jobs:
             -configure -privs -all \
             -restart -agent
 
-          # Write the VNC password in the DES bit-reversed format macOS expects
-          python3 << 'PYEOF'
-import os, sys
+          echo "Screen Sharing enabled"
 
-password = os.environ.get("VNC_PASS", "")
-password = password[:8].ljust(8, '\x00')
-
-def reverse_bits(b):
-    result = 0
-    for _ in range(8):
-        result = (result << 1) | (b & 1)
-        b >>= 1
-    return result
-
-key = [23, 82, 107, 6, 35, 78, 88, 7]
-pw_bytes = [ord(c) for c in password]
-pw_bytes = [reverse_bits(b) for b in pw_bytes]
-key      = [reverse_bits(k) for k in key]
-encoded  = bytes([pw_bytes[i] ^ key[i % len(key)] for i in range(8)])
-
-os.makedirs("/tmp/vnc", exist_ok=True)
-with open("/tmp/vnc/vncpasswd", "wb") as f:
-    f.write(encoded)
-print("VNC password file written successfully")
-PYEOF
+      - name: Set VNC Password
+        run: |
+          python3 -c "
+          import os
+          password = os.environ['VNC_PASS'][:8].ljust(8, chr(0))
+          key = [23, 82, 107, 6, 35, 78, 88, 7]
+          def rb(b):
+              r = 0
+              for _ in range(8):
+                  r = (r << 1) | (b & 1)
+                  b >>= 1
+              return r
+          pw = [rb(ord(c)) for c in password]
+          ky = [rb(k) for k in key]
+          enc = bytes([pw[i] ^ ky[i] for i in range(8)])
+          with open('/tmp/vncpw', 'wb') as f:
+              f.write(enc)
+          print('VNC password written')
+          "
 
           sudo mkdir -p /Library/Preferences/com.apple.RemoteManagement
-          sudo cp /tmp/vnc/vncpasswd /Library/Preferences/com.apple.RemoteManagement/VNCPassword
+          sudo cp /tmp/vncpw /Library/Preferences/com.apple.RemoteManagement/VNCPassword
           sudo chmod 600 /Library/Preferences/com.apple.RemoteManagement/VNCPassword
-
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true
 
-          # Restart ARD agent to apply password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -restart -agent
 
-          echo "Screen Sharing (VNC) enabled on port 5900"
+          echo "VNC password configured"
         env:
           VNC_PASS: ${{ secrets.ROOT_PASSWORD }}
 
-      - name: Ensure GUI Console Session Exists
+      - name: Ensure GUI Console Session
         run: |
-          # Check if WindowServer (the macOS display compositor) is running
           if pgrep -x WindowServer > /dev/null; then
-            echo "WindowServer is running - GUI session is active"
+            echo "WindowServer is running - GUI session active"
           else
-            echo "WindowServer not running - attempting to start loginwindow"
+            echo "WindowServer not running - starting loginwindow"
             sudo launchctl load /System/Library/LaunchDaemons/com.apple.loginwindow.plist 2>/dev/null || true
           fi
-
           sleep 3
-
-          # Restart ARD agent so it picks up TCC grants and active display
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -restart -agent
-
           sleep 2
           echo "Console session check complete"
 
@@ -132,7 +104,6 @@ PYEOF
           else
             NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip"
           fi
-
           echo "Downloading Ngrok for $ARCH..."
           curl -s -L "$NGROK_URL" -o ngrok.zip
           sudo unzip -o ngrok.zip -d /usr/local/bin
@@ -140,51 +111,42 @@ PYEOF
           ngrok version
 
       - name: Authenticate Ngrok
-        run: |
-          ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
+        run: ngrok authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
 
       - name: Start Ngrok Tunnel
         run: |
-          # Start Ngrok tunnel for VNC (port 5900)
           ngrok tcp 5900 > ngrok.log 2>&1 &
-          echo "Ngrok started in background"
+          echo "Ngrok tunnel started"
 
       - name: Print VNC Connection Info
         run: |
           sleep 5
-
           echo "Runner user: $(whoami)"
           echo "Hostname: $(hostname)"
           sw_vers
-
-          curl -s http://127.0.0.1:4040/api/tunnels | python3 << 'PYEOF'
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for tunnel in data.get("tunnels", []):
-        url = tunnel.get("public_url", "")
-        if url.startswith("tcp://"):
-            addr = url.replace("tcp://", "")
-            host, port = addr.rsplit(":", 1)
-            print("")
-            print("========================================")
-            print("       MAC VNC CONNECTION INFO          ")
-            print("========================================")
-            print(f"  VNC Address : {host}:{port}")
-            print(f"  Username    : vncuser")
-            print(f"  Password    : (your ROOT_PASSWORD secret)")
-            print("")
-            print("  Connect with RealVNC Viewer (Windows):")
-            print(f"    {host}:{port}")
-            print("")
-            print("  Connect from Mac (Finder > Go > Connect to Server):")
-            print(f"    vnc://{host}:{port}")
-            print("========================================")
-except Exception as e:
-    print(f"Error: {e}")
-    print("Check ngrok.log for details")
-PYEOF
+          TUNNEL_INFO=$(curl -s http://127.0.0.1:4040/api/tunnels)
+          PUBLIC_URL=$(echo "$TUNNEL_INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'])" 2>/dev/null || echo "UNAVAILABLE")
+          if [ "$PUBLIC_URL" != "UNAVAILABLE" ]; then
+            ADDR=$(echo "$PUBLIC_URL" | sed 's|tcp://||')
+            HOST=$(echo "$ADDR" | rev | cut -d: -f2- | rev)
+            PORT=$(echo "$ADDR" | rev | cut -d: -f1 | rev)
+            echo ""
+            echo "========================================"
+            echo "       MAC VNC CONNECTION INFO          "
+            echo "========================================"
+            echo "  VNC Address : $HOST:$PORT"
+            echo "  Username    : vncuser"
+            echo "  Password    : (your ROOT_PASSWORD secret)"
+            echo ""
+            echo "  Connect with RealVNC Viewer (Windows):"
+            echo "    $HOST:$PORT"
+            echo ""
+            echo "  Connect from Mac (Finder > Go > Connect to Server):"
+            echo "    vnc://$HOST:$PORT"
+            echo "========================================"
+          else
+            echo "ERROR: Could not get tunnel info. Check ngrok.log"
+          fi
 
       - name: Keep Runner Alive
-        run: |
-          sleep 21600
+        run: sleep 21600
